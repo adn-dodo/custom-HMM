@@ -1,4 +1,4 @@
-# AdnAlloc — Heap Memory Manager
+# CUSTOM — Heap Memory Manager
 
 AdnAlloc is a C11 heap allocator built inside the instructor-provided project layout. It uses a **simulated** program break: the backing storage is a fixed-size, suitably aligned byte array, rather than memory obtained with `sbrk()`.
 
