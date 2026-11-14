@@ -1,16 +1,15 @@
 /*
     File : HmmAlloc.c
-    Desc : Heap Memory Manager allocation function stubs
+    Desc : Heap Memory Manager allocation functions
 */
 
+#define _DEFAULT_SOURCE
 #include "Hmm.h"
 #include <stdint.h>
+#include <unistd.h>
 
-#define HEAP_CAPACITY (1024 * 1024)
-
-static _Alignas(max_align_t) unsigned char heap_area[HEAP_CAPACITY];
-unsigned char *program_break = heap_area;
-static unsigned char *heap_limit = heap_area + HEAP_CAPACITY;
+unsigned char *program_break = NULL;
+unsigned char *initial_program_break = NULL;
 
 
 block *free_head = NULL;
@@ -60,19 +59,35 @@ static size_t align_size(size_t size){
 }
 
 static unsigned char *increase_program_break(size_t size){
-    if(size == 0)
+    if(size == 0 || size > (size_t)INTPTR_MAX)
         return NULL;
 
-    size_t available = heap_limit - program_break;
-
-    if(size > available)
+    void *current_break = sbrk(0);
+    if(current_break == (void *)-1)
         return NULL;
 
-    unsigned char *old_break = program_break;
+    // Never extend our blocks over memory another allocator added.
+    if(program_break != NULL && current_break != program_break)
+        return NULL;
 
-    program_break += size;
+    size_t padding = 0;
+    if(program_break == NULL){
+        padding = (ALIGNMENT - ((uintptr_t)current_break % ALIGNMENT)) % ALIGNMENT;
+        if(size > (size_t)INTPTR_MAX - padding)
+            return NULL;
+    }
 
-    return old_break;
+    void *old_break = sbrk((intptr_t)(size + padding));
+    if(old_break == (void *)-1)
+        return NULL;
+
+    unsigned char *start = (unsigned char *)old_break + padding;
+
+    if(program_break == NULL)
+        initial_program_break = (unsigned char *)old_break;
+
+    program_break = start + size;
+    return start;
 }
 
 static block *grow_heap(size_t size){
@@ -85,24 +100,21 @@ static block *grow_heap(size_t size){
         required = size - last_physical->size;
     }
     else{
-        if(size > HEAP_CAPACITY - HEADER_SIZE)
+        if(size > (size_t)INTPTR_MAX - HEADER_SIZE)
             return NULL;
 
         required = size + HEADER_SIZE;
     }
 
     size_t chunks = required / HEAP_CHUNK_SIZE;
-
     if(required % HEAP_CHUNK_SIZE != 0)
         chunks++;
 
-    if(chunks > (size_t)(heap_limit - program_break) / HEAP_CHUNK_SIZE)
+    if(chunks > (size_t)INTPTR_MAX / HEAP_CHUNK_SIZE)
         return NULL;
 
     size_t grow_size = chunks * HEAP_CHUNK_SIZE;
-
     unsigned char *start = increase_program_break(grow_size);
-
     if(start == NULL)
         return NULL;
 
@@ -112,18 +124,14 @@ static block *grow_heap(size_t size){
     }
 
     block *new_block = (block *)start;
-
     new_block->size = grow_size - HEADER_SIZE;
     new_block->is_free = true;
-
     new_block->previous_physical = last_physical;
     new_block->previous_free = NULL;
     new_block->next_free = NULL;
 
     last_physical = new_block;
-
     insert_at_beginning_free(new_block);
-
     return new_block;
 }
 

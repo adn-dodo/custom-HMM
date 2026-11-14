@@ -16,11 +16,12 @@ DEPS := $(SRCS:$(SRC_DIR)/%.c=$(DEP_DIR)/%.d)
 LIB := $(LIB_DIR)/libhmm.a
 SHARED_LIB := $(LIB_DIR)/libhmm.so
 TEST_APP := $(BUILD_DIR)/hmm_test
+VERIFY_APP := $(BUILD_DIR)/break_patterns
 
 CPPFLAGS := -I$(INC_DIR)
 CFLAGS := -Wall -Wextra -g -fPIC
 
-.PHONY: all static_lib shared_lib test clean
+.PHONY: all static_lib shared_lib test verify clean
 
 all: static_lib test
 
@@ -35,6 +36,12 @@ $(SHARED_LIB): $(OBJS) | $(LIB_DIR)
 	$(CC) -shared -o $@ $^
 
 test: $(TEST_APP)
+
+verify: $(VERIFY_APP)
+	./$(VERIFY_APP)
+
+$(VERIFY_APP): verification/break_patterns.c src/HmmAlloc.c src/HmmFree.c inc/Hmm.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -std=c11 -O0 -o $@ verification/break_patterns.c src/HmmAlloc.c src/HmmFree.c
 
 $(TEST_APP): $(OBJS) $(wildcard $(TEST_DIR)/*.c) | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(wildcard $(TEST_DIR)/*.c) $(OBJS)

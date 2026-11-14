@@ -3,7 +3,10 @@
     Desc : Heap Memory Manager free function
 */
 
+#define _DEFAULT_SOURCE
 #include "Hmm.h"
+#include <stdint.h>
+#include <unistd.h>
 
 #define TRIM_THRESHOLD (2 * HEAP_CHUNK_SIZE)
 
@@ -20,18 +23,45 @@ static void trim_heap(void){
     if(last_physical == NULL || !last_physical->is_free)
         return;
 
-    size_t total = HEADER_SIZE + last_physical->size;
-
-    if(total <= HEAP_CHUNK_SIZE)
+    void *current_break = sbrk(0);
+    if(current_break == (void *)-1 || current_break != program_break)
         return;
 
-    size_t released = ((total - HEAP_CHUNK_SIZE) / HEAP_CHUNK_SIZE) * HEAP_CHUNK_SIZE;
+    // Everything is free: return the entire arena, including alignment padding.
+    if(last_physical->previous_physical == NULL){
+        size_t released = (uintptr_t)program_break - (uintptr_t)initial_program_break;
+        if(released > (size_t)INTPTR_MAX)
+            return;
 
-    if(released < TRIM_THRESHOLD)
+        block *last = last_physical;
+        remove_free_block(last);
+        if(sbrk(-((intptr_t)released)) == (void *)-1){
+            insert_at_beginning_free(last);
+            return;
+        }
+
+        last_physical = NULL;
+        program_break = NULL;
+        initial_program_break = NULL;
+        return;
+    }
+
+    // Return the entire free tail once it is large enough to justify sbrk().
+    size_t released = HEADER_SIZE + last_physical->size;
+    if(released < TRIM_THRESHOLD || released > (size_t)INTPTR_MAX)
         return;
 
+    block *last = last_physical;
+    block *previous = last->previous_physical;
+    remove_free_block(last);
+
+    if(sbrk(-((intptr_t)released)) == (void *)-1){
+        insert_at_beginning_free(last);
+        return;
+    }
+
+    last_physical = previous;
     program_break -= released;
-    last_physical->size -= released;
 }
 
 void HmmFree(void *ptr){

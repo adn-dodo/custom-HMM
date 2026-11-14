@@ -27,6 +27,7 @@ typedef struct block {
 extern block *free_head;
 extern block *last_physical;
 extern unsigned char *program_break;
+extern unsigned char *initial_program_break;
 
 void insert_at_beginning_free(block *new_block);
 void remove_free_block(block *target);

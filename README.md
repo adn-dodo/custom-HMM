@@ -1,87 +1,149 @@
-# CUSTOM — Heap Memory Manager
+# custom-HMM — Heap Memory Manager
 
-AdnAlloc is a C11 heap allocator built inside the instructor-provided project layout. It uses a **simulated** program break: the backing storage is a fixed-size, suitably aligned byte array, rather than memory obtained with `sbrk()`.
+A C heap allocator implementing `HmmAlloc(size_t)` and `HmmFree(void *)` using **real Linux `sbrk()`** for heap growth and shrinking. The original project layout and First Fit design are retained.
 
-## Current status
+## Features
 
-- Implemented: `HmmAlloc()`, `HmmFree()`, First Fit, free-list insertion/removal, block splitting, immediate coalescing, aligned allocations, chunk-based heap growth, and controlled heap shrinking.
-- Still TODO: `hmmCalloc()`, `hmmReAlloc()`, and `hmmSize()` (currently placeholders). The complete instructor test therefore does **not** pass yet.
-- The original directory structure, public function signatures, `Makefile`, and `heapWrappers.c` have been preserved. No extra `.c` or `.h` files have been added.
+- First Fit allocation through a doubly linked free list.
+- Block splitting to reuse excess space.
+- Immediate coalescing of adjacent free blocks.
+- `max_align_t` alignment for headers and returned payloads.
+- Chunk-based growth using `sbrk(positive_increment)`; default chunk is 4096 bytes.
+- Trimming of trailing free memory using `sbrk(negative_increment)`.
+- Checks for invalid sizes, integer overflow, and `sbrk()` failures.
 
-## Design
+## Memory layout
 
-**Backing memory and break.** `heap_area` holds 1 MiB of storage. `program_break` initially points to its beginning; `heap_limit` marks the end of the array. Raising or lowering `program_break` only changes the *logically managed* region; it does not change the process's real program break. Growth occurs in 4096-byte chunks when no suitable free block can be found.
+A block consists of its padded header followed by its payload:
 
-**Block layout.** Each block contains a header followed by a payload. The header stores usable payload capacity, allocation status, a pointer to the previous physical block, and two links used by the doubly linked free list. The next physical block can be calculated from the current header address, padded header size, and usable payload capacity. Both payloads and headers are aligned using `_Alignof(max_align_t)` and `HEADER_SIZE`.
-
-**Allocation.** `HmmAlloc()` rejects zero-sized requests and checked-overflow alignment, then finds the first sufficiently large free block. If necessary, the simulated heap grows. It removes the selected block from the free list, splits it only if the remainder can hold a new aligned header and usable payload, marks it allocated, and returns its payload pointer.
-
-**Freeing and coalescing.** `HmmFree(NULL)` does nothing. For a valid outstanding allocation, `HmmFree()` marks its block free, merges it with any physically adjacent free successor and predecessor, repairs the physical-neighbor links and free list, and inserts the resulting free block. No payload bytes need to be copied during coalescing.
-
-**Controlled trimming.** When the last physical block is free, the allocator can decrease `program_break`. To avoid frequent changes, it trims only when at least **two complete 4096-byte chunks** can be released while retaining at least one chunk in the trailing free block. No still-allocated block is discarded. The backing array remains allocated throughout.
-
-**Invariants.** Every free block is represented exactly once in the free list; allocated blocks are absent from it; there are no neighboring physically free blocks after a completed free; physical headers span the managed region without gaps; and `program_break` remains within the backing array.
-
-## Limitations
-
-- This is a learning allocator, not a production or thread-safe replacement for libc's allocator.
-- `HmmFree(ptr)` requires a pointer returned by an active `HmmAlloc()` allocation. Arbitrary invalid pointers and double frees after coalescing are not guaranteed to be detected safely.
-- The free list uses First Fit and may take O(n) time to find a block.
-- The current fixed arena has a capacity of 1 MiB. Requests that cannot fit return `NULL`.
-- Internal metadata and shared state remain exposed through `Hmm.h` to preserve the original project structure; they can be separated into an internal header in a later refactor.
-
-## Build
-
-```sh
-make clean
-make
+```text
++----------------------------------------------------------+
+| size | is_free | previous_physical | prev_free | next_free|
++----------------------------------------------------------+
+| User payload (returned pointer points to its beginning)  |
++----------------------------------------------------------+
 ```
 
-This produces `build/lib/libhmm.a` and `build/hmm_test`. You can also run `make shared_lib` to build the shared library.
+`size` is usable payload capacity, not including `HEADER_SIZE`. Each block contains a pointer to its preceding *physical* block. `previous_free` and `next_free` link only free blocks; the free-list order is separate from physical address order. The address of the next physical block is derived from `header + HEADER_SIZE + size`.
 
-## Tests
+## Real `sbrk()` and alignment
 
-The instructor's `test/main.c` exercises `malloc/free`, and also enables `calloc/realloc`. At the current stage `calloc/realloc` are not implemented, so **do not expect the complete test executable to pass**. The core allocation and free portions (with the two optional test sections disabled in a temporary copy) have passed. Independent tests also passed for memory reuse, alignment, coalescing, trimming, allocation failure, 20,000 randomized operations, and both AddressSanitizer and UndefinedBehaviorSanitizer.
+Unlike the earlier simulated-array version, this implementation has **no fixed `heap_area`**. On the first request it obtains the current break using `sbrk(0)`. It then calls `sbrk()` with a positive increment rounded up to one or more `HEAP_CHUNK_SIZE` chunks. If the original break is not suitably aligned, the first increment also includes a few alignment-padding bytes.
 
-The instructor's real-`sbrk(0)` check verifies that AdnAlloc does not change the OS program break, **not** that the simulated program break was reduced. The latter requires inspecting `program_break` or running targeted tests.
+`program_break` tracks the last break set by this allocator; `initial_program_break` remembers the break from before the first growth, so a completely freed heap can be returned to its original position. These variables are bookkeeping for the **real** break, not a simulated heap. To avoid overwriting memory added by an unrelated allocator, growth and trimming are skipped when `sbrk(0)` does not match the allocator's tracked end. This design is intended for a controlled, **single-threaded demonstration program**.
 
-Do **not** use `LD_PRELOAD` with this project until all allocation-family functions and edge cases have been completed and extensively tested.
+**Important:** `sbrk()` changes the actual process break. Combining this allocator with glibc's own heap allocator, other libraries, or concurrent threads is unsafe. `sbrk()` is a legacy nonportable interface; this project uses it because the assignment explicitly requires it. Do not use the project as an `LD_PRELOAD` replacement for `malloc()`.
 
-## Simulated program-break verification
+## `HmmAlloc(size)` algorithm
 
-The independent `verification/break_patterns.c` test adapts the **allocation/free patterns** discussed in *The Linux Programming Interface* `free_and_sbrk.c` example. It uses `HmmAlloc()`, `HmmFree()`, and AdnAlloc's exported `program_break` rather than `malloc()`, `free()`, and the OS's `sbrk(0)`.
+1. Reject `size == 0`, overflow in alignment, and unrepresentable `sbrk()` increments.
+2. Round the requested size up to `ALIGNMENT`.
+3. Find the first free block large enough for the aligned request.
+4. If none is available, extend the heap in 4096-byte chunks using real `sbrk()`; when the last physical block is free, extend that block rather than creating another header.
+5. Remove the selected block from the free list.
+6. Split the block if the remainder can hold another header and a useful aligned payload.
+7. Mark the allocated block as used, and return its payload pointer.
 
-The linked example uses much larger allocations; this test uses **100 blocks of 1024 bytes** to stay within the allocator's fixed 1 MiB backing arena.
+### `HmmAlloc()` flowchart
 
-- **Pattern 1:** Free every other block; the simulated break must not decrease while the final allocation remains active.
-- **Pattern 2:** Free everything except the final block; the simulated break must not decrease.
-- **Pattern 3:** Free the final 50 blocks; adjacent trailing free space should coalesce and the simulated break should decrease.
+```mermaid
+flowchart TD
+    A([HmmAlloc size]) --> B{Size valid and alignable?}
+    B -- No --> X([Return NULL])
+    B -- Yes --> C[Align requested size]
+    C --> D[Find first fitting free block]
+    D --> E{Found?}
+    E -- No --> F[Calculate chunk-rounded growth]
+    F --> G[Check real break and call sbrk positive]
+    G --> H{Growth succeeded?}
+    H -- No --> X
+    H -- Yes --> I[Create or extend trailing free block]
+    I --> J[Remove block from free list]
+    E -- Yes --> J
+    J --> K{Enough space to split?}
+    K -- Yes --> L[Create remainder and insert into free list]
+    K -- No --> M[Keep whole block]
+    L --> N[Mark block allocated]
+    M --> N
+    N --> O([Return payload pointer])
+```
 
-All tests also verify that the contents of still-allocated blocks remain unchanged and that the growth algorithm makes fewer break adjustments than individual allocation calls.
+## `HmmFree(ptr)` algorithm
 
-From the project root:
+1. Return immediately for `NULL`.
+2. Recover the header by subtracting `HEADER_SIZE` from the payload pointer. The caller must pass a valid, active HMM allocation.
+3. Mark the block free. Merge with its physically adjacent free successor and predecessor, removing each merged neighbor from the free list and repairing physical links.
+4. Insert the merged block into the free list.
+5. If it is the last physical block, potentially shrink the real process break using a **checked negative `sbrk()` call**. When *all* HMM blocks are free, release the whole HMM region, including initial alignment padding. Otherwise, trim the whole free tail only when it reaches `TRIM_THRESHOLD` (two chunks), to avoid frequent small decrements.
+
+### `HmmFree()` flowchart
+
+```mermaid
+flowchart TD
+    A([HmmFree ptr]) --> B{ptr is NULL?}
+    B -- Yes --> Z([Return])
+    B -- No --> C[Find header and mark block free]
+    C --> D{Next physical block free?}
+    D -- Yes --> E[Remove next from free list and coalesce]
+    D -- No --> F{Previous physical block free?}
+    E --> F
+    F -- Yes --> G[Remove previous from free list and coalesce]
+    F -- No --> H[Insert merged block into free list]
+    G --> H
+    H --> I{Merged block ends at real break?}
+    I -- No --> Z
+    I -- Yes --> J{Break unchanged by other code?}
+    J -- No --> Z
+    J -- Yes --> K{All HMM memory free or tail >= threshold?}
+    K -- No --> Z
+    K -- Yes --> L[Call sbrk with negative increment]
+    L --> M{Successful?}
+    M -- No --> N[Preserve original free block and metadata]
+    M -- Yes --> O[Update last block and tracked break]
+    N --> Z
+    O --> Z
+```
+
+## Build and test
 
 ```sh
-make
+make clean && make
+make verify
+```
 
-gcc -std=c11 -Wall -Wextra -g -Iinc \
+`make` builds `build/lib/libhmm.a` and the instructor's `build/hmm_test`. **`make test` builds that executable; it does not execute it.** `make verify` builds and runs the standalone, real-`sbrk()` verification without the standard-library wrappers:
+
+```sh
+gcc -std=c11 -Wall -Wextra -g -O0 -Iinc \
     -o build/break_patterns \
     verification/break_patterns.c src/HmmAlloc.c src/HmmFree.c
-
 ./build/break_patterns
 ```
 
-For sanitizer verification:
+The three scenarios adapt the allocation/free patterns of *The Linux Programming Interface* `free_and_sbrk.c` example ([source](https://man7.org/tlpi/code/online/dist/memalloc/free_and_sbrk.c.html)):
+
+1. Free alternating blocks: the break stays at the allocation peak while an allocation remains at the end.
+2. Free all but the last block: the break stays at the allocation peak.
+3. Free the last half: trailing free blocks coalesce and the break decreases.
+
+Each run uses 100 allocations of 1024 bytes, checks the contents of live blocks, verifies that the number of growth calls is below the number of allocations, and ensures that a final complete free restores the **actual** `sbrk(0)` break to its original address. This is a real-break test, unlike the earlier simulated version.
+
+The original `test/main.c` links `heapWrappers.c`, which redirects `malloc/free/calloc/realloc` to HMM. `hmmCalloc()`, `hmmReAlloc()`, and `hmmSize()` remain *starter-project stubs*. The first three tests exercise the core allocator; the optional `realloc`/`calloc` tests will not pass until those functions are implemented or their `REALLOC_IS_DEFINED` and `CALLOC_IS_DEFINED` flags are disabled in the **test copy**. We keep the instructor's original test unchanged here.
+
+The first instructor test also expects the break to be *exactly equal* to the address recorded after an initial `printf`. With real `sbrk()`, HMM can return a preexisting trailing free chunk too, leaving the break **below** that saved address; the first test can print `failed` even when the memory was correctly released. Use `make verify` for a controlled real-break assertion.
+
+### Valgrind
 
 ```sh
-gcc -std=c11 -Wall -Wextra -g -fsanitize=address,undefined \
-    -fno-omit-frame-pointer -Iinc \
-    -o build/break_patterns_san \
-    verification/break_patterns.c src/HmmAlloc.c src/HmmFree.c
-
-./build/break_patterns_san
+valgrind --tool=memcheck --leak-check=full --track-origins=yes ./build/break_patterns
 ```
 
-**Observed results (November 2026):** All three patterns passed under normal compilation and with AddressSanitizer/UndefinedBehaviorSanitizer. In the third test, the managed heap was reduced from 106,496 bytes to 57,344 bytes. These results do not imply that the full instructor test (which also calls `calloc()` and `realloc()`) passes.
+Valgrind executes the test and allocator code, but ordinary Memcheck may not associate `HmmAlloc()` payloads with logical heap allocations. A zero-error report therefore does **not** prove all custom-block accesses are valid. Custom-allocation annotations would be a separate debugging improvement. Test without `heapWrappers.c` to avoid intercepting libc allocation calls.
 
-Reference: https://man7.org/tlpi/code/online/dist/memalloc/free_and_sbrk.c.html
+## Limitations
+
+- This is not thread safe and is not intended to coexist with other libraries manipulating the process break.
+- `HmmFree()` requires a valid outstanding pointer returned by `HmmAlloc()`. Invalid pointers and double frees are undefined behavior; the `is_free` guard is not a general pointer validator.
+- A First Fit list scan is O(n) in the number of free blocks.
+- Small free trailing blocks below `TRIM_THRESHOLD` can be retained while other allocations are live.
+- `hmmCalloc()`, `hmmReAlloc()`, and `hmmSize()` remain TODOs from the starter code; they are not required by the assignment's `HmmAlloc`/`HmmFree` signatures.
