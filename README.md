@@ -74,7 +74,7 @@ flowchart TD
 2. Recover the header by subtracting `HEADER_SIZE` from the payload pointer. The caller must pass a valid, active HMM allocation.
 3. Mark the block free. Merge with its physically adjacent free successor and predecessor, removing each merged neighbor from the free list and repairing physical links.
 4. Insert the merged block into the free list.
-5. If it is the last physical block, potentially shrink the real process break using a **checked negative `sbrk()` call**. When *all* HMM blocks are free, release the whole HMM region, including initial alignment padding. Otherwise, trim the whole free tail only when it reaches `TRIM_THRESHOLD` (two chunks), to avoid frequent small decrements.
+5. If it is the last physical block, potentially shrink the real process break using a **checked negative `sbrk()` call**. When *all* HMM blocks are free, release the whole HMM region, including initial alignment padding. Otherwise, release full 4096-byte chunks only when at least `TRIM_THRESHOLD` (two chunks) can be returned. Preserve a usable remainder of the tail free block when possible. This reduces `sbrk()` calls and avoids trimming unused space from an earlier reserved chunk.
 
 ### `HmmFree()` flowchart
 
@@ -130,7 +130,7 @@ Each run uses 100 allocations of 1024 bytes, checks the contents of live blocks,
 
 The original `test/main.c` links `heapWrappers.c`, which redirects `malloc/free/calloc/realloc` to HMM. `hmmCalloc()`, `hmmReAlloc()`, and `hmmSize()` remain *starter-project stubs*. The first three tests exercise the core allocator; the optional `realloc`/`calloc` tests will not pass until those functions are implemented or their `REALLOC_IS_DEFINED` and `CALLOC_IS_DEFINED` flags are disabled in the **test copy**. We keep the instructor's original test unchanged here.
 
-The first instructor test also expects the break to be *exactly equal* to the address recorded after an initial `printf`. With real `sbrk()`, HMM can return a preexisting trailing free chunk too, leaving the break **below** that saved address; the first test can print `failed` even when the memory was correctly released. Use `make verify` for a controlled real-break assertion.
+The first instructor test expects the break to equal the address recorded after an initial `printf`. Because the wrappers may serve that `printf` buffer through HMM, trimming arbitrary byte counts could shrink the break below the saved chunk boundary. Our chunk-granular trimming avoids that behavior in the starter core test. The wrapper-based tests still mix HMM and libc activity, so controlled direct-HMM testing with `make verify` is important.
 
 ### Valgrind
 

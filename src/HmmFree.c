@@ -46,22 +46,41 @@ static void trim_heap(void){
         return;
     }
 
-    // Return the entire free tail once it is large enough to justify sbrk().
-    size_t released = HEADER_SIZE + last_physical->size;
+    // Release complete chunks, retaining a valid trailing free block if needed.
+    size_t total = HEADER_SIZE + last_physical->size;
+    if(total < TRIM_THRESHOLD)
+        return;
+
+    size_t released = (total / HEAP_CHUNK_SIZE) * HEAP_CHUNK_SIZE;
+    size_t remaining = total - released;
+
+    if(remaining > 0 && remaining < HEADER_SIZE + ALIGNMENT){
+        released -= HEAP_CHUNK_SIZE;
+        remaining += HEAP_CHUNK_SIZE;
+    }
+
     if(released < TRIM_THRESHOLD || released > (size_t)INTPTR_MAX)
         return;
 
     block *last = last_physical;
     block *previous = last->previous_physical;
-    remove_free_block(last);
+
+    if(remaining == 0)
+        remove_free_block(last);
 
     if(sbrk(-((intptr_t)released)) == (void *)-1){
-        insert_at_beginning_free(last);
+        if(remaining == 0)
+            insert_at_beginning_free(last);
         return;
     }
 
-    last_physical = previous;
+    if(remaining == 0)
+        last_physical = previous;
+    else
+        last_physical->size = remaining - HEADER_SIZE;
+
     program_break -= released;
+
 }
 
 void HmmFree(void *ptr){
