@@ -1,154 +1,70 @@
-# Heap Memory Manager Skeleton
+# Custom Heap Memory Manager (HMM)
 
-This project provides replacements for the C library `malloc`, `free`, `calloc`, and `realloc` functions. The wrappers in `src/heapWrappers.c` are complete, but the functions in `src/HmmAlloc.c` and `src/HmmFree.c` are placeholders that must be implemented.
+This is my implementation of a Heap Memory Manager in C, starting from the original project skeleton.
 
-## Requirements
+I used real `sbrk()` to manage the heap and implemented the allocation and free functions, with First Fit, splitting, coalescing, and heap trimming.
 
-The project is intended for Linux because the allocator uses Linux/POSIX interfaces such as `sbrk`.
+## How it works
 
-Install the required tools on Debian or Ubuntu:
+- **First Fit:** I search the free list and use the first block large enough for the requested size.
+- **Heap growth:** If no suitable block is available, I increase the program break in 4096-byte chunks. If the last physical block is free, I extend it instead of creating another block.
+- **Splitting:** If a free block is larger than needed, I split it and keep the remaining part in the free list.
+- **Coalescing:** When a block is freed, I merge it with adjacent free blocks when possible.
+- **Trimming:** I use negative `sbrk()` to return unused memory at the end of the heap when possible.
+- **Alignment:** Allocated blocks are aligned using `max_align_t`.
 
-```sh
-sudo apt update
-sudo apt install build-essential
-```
+The free blocks are kept in a doubly linked free list. I also track the current program break to avoid growing my blocks over memory added by something else.
 
-## Implement the Allocator
+## Functions
 
-Implement the functions declared in `inc/Hmm.h`:
+| Function | Purpose |
+| --- | --- |
+| `HmmAlloc()` | Allocate memory |
+| `HmmFree()` | Free memory and coalesce neighboring free blocks |
+| `hmmCalloc()` | Allocate and initialize memory to zero |
+| `hmmReAlloc()` | Reallocate memory while preserving existing data |
+| `hmmSize()` | Return the usable size of an allocated block |
 
-- `HmmAlloc` in `src/HmmAlloc.c`
-- `hmmCalloc` in `src/HmmAlloc.c`
-- `hmmReAlloc` in `src/HmmAlloc.c`
-- `hmmSize` in `src/HmmAlloc.c`
-- `HmmFree` in `src/HmmFree.c`
+The original wrappers in `src/heapWrappers.c` connect these functions to `malloc()`, `free()`, `calloc()`, and `realloc()`.
 
-Do not change `src/heapWrappers.c`. It redirects the standard allocation function names to the functions above.
+## Build and test
 
-## Build
+On Linux with GCC and Make installed:
 
-From this directory, build the static library and test executable:
-
-```sh
+```bash
 make
-```
-
-Build individual outputs:
-
-```sh
-make static_lib
 make shared_lib
-make test
 ```
 
-The generated files are:
+This builds the static library, shared library, and test program.
 
-- `build/lib/libhmm.a`: static library
-- `build/lib/libhmm.so`: shared library for Linux runtime interposition
-- `build/hmm_test`: allocator test executable
+Run the tests:
 
-Remove generated files with:
+```bash
+./build/hmm_test
+make verify
+```
 
-```sh
+All five tests in `test/main.c` and the three program-break verification patterns passed in my testing.
+
+To remove build files:
+
+```bash
 make clean
 ```
 
-## Run the Tests
+## Using LD_PRELOAD
 
-Build and run the test executable:
+I also tested the shared library with Linux commands:
 
-```sh
-make test
-./build/hmm_test
+```bash
+LD_PRELOAD="$(pwd)/build/lib/libhmm.so" /usr/bin/ls -la
 ```
 
-The provided placeholder functions return allocation failures, so the tests are expected to fail until the allocator is implemented.
+I tested `ls`, `grep`, and `wc` successfully.
 
-For additional compiler diagnostics, override `CFLAGS` when building:
+This is a learning project, not a complete replacement for glibc's allocator. It is not thread-safe, and it does not implement allocation interfaces such as `posix_memalign()`. Some programs, including the Rust version of `sort` on my system, can fail because they use other allocation paths.
 
-```sh
-make clean
-make CFLAGS="-Wall -Wextra -Wpedantic -g -fPIC -fsanitize=address,undefined"
-./build/hmm_test
-```
+## Flowcharts
 
-## Link an Application Statically
-
-Build the static library, then place the library after the application's source or object files in the compiler command:
-
-```sh
-make static_lib
-gcc -Iinc example.c build/lib/libhmm.a -o example
-./example
-```
-
-The linked executable uses the wrappers from this project for its standard allocation calls.
-
-## Use the Allocator in a Linux Shell
-
-Linux can load `libhmm.so` before libc by using `LD_PRELOAD`. This redirects allocation calls made by dynamically linked programs to this library.
-
-First, fully implement and test the allocator. Do not preload the current placeholder implementation because every allocation returns `NULL` and programs may fail to start.
-
-Build the shared library and save its absolute path:
-
-```sh
-make shared_lib
-export HMM_LIB="$(pwd)/build/lib/libhmm.so"
-```
-
-Use the allocator for one command:
-
-```sh
-LD_PRELOAD="$HMM_LIB" command_name argument1 argument2
-```
-
-For example:
-
-```sh
-LD_PRELOAD="$HMM_LIB" ls -la
-```
-
-To use the allocator for a temporary child shell and the dynamically linked commands launched from it:
-
-```sh
-LD_PRELOAD="$HMM_LIB" bash --noprofile --norc
-```
-
-Inside that child shell, confirm the setting and run commands normally:
-
-```sh
-printf '%s\n' "$LD_PRELOAD"
-ls
-grep --version
-```
-
-Leave the temporary shell with:
-
-```sh
-exit
-```
-
-If the current shell remains usable but a preloaded program fails, disable interposition with the shell builtin:
-
-```sh
-unset LD_PRELOAD
-```
-
-Do not add this library to `/etc/ld.so.preload` or a login profile. A defect in a globally preloaded memory allocator can prevent shells and recovery commands from starting.
-
-`LD_PRELOAD` does not affect statically linked executables, secure/set-user-ID programs that reject preload variables, shell builtins already running in the parent shell, or programs that bypass the standard allocation functions.
-
-## My work on the HMM
-
-I started with the original project and implemented the HMM using real `sbrk()`.
-
-- I used First Fit to find a free block big enough for the requested size.
-- If there is no suitable block, I grow the heap in 4096-byte chunks.
-- If the last physical block is free, I extend it. Otherwise, I create a new block and add it to the free list.
-- I split a large block and keep the remaining space in the free list.
-- When I free a block, I merge it with the free blocks next to it.
-- I use negative `sbrk()` to shrink the heap when possible.
-- I also implemented `calloc()`, `realloc()`, and `hmmSize()`.
-
-I kept the flowcharts in a separate file: [FLOWCHARTS.md](FLOWCHARTS.md).
+The flowcharts for `HmmAlloc()` and `HmmFree()` are in [FLOWCHARTS.md](FLOWCHARTS.md).
