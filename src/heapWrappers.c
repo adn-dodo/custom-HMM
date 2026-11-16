@@ -12,20 +12,6 @@
 
 void * malloc(size_t size)
 {
-    char buffer[32];
-    size_t n = size;
-    int i = sizeof(buffer);
-
-    buffer[--i] = '\n';
-
-    do {
-        buffer[--i] = '0' + (n % 10);
-        n /= 10;
-    } while(n != 0);
-
-    write(2, "malloc requested: ", 18);
-    write(2, buffer + i, sizeof(buffer) - i);
-
     return HmmAlloc(size);
 }
 
