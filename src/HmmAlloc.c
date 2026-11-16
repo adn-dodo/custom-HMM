@@ -67,10 +67,9 @@ static unsigned char *increase_program_break(size_t size){
     if(current_break == (void *)-1)
         return NULL;
 
-    if(program_break != NULL && current_break != program_break){
-    write(2, "HMM: program break mismatch\n", sizeof("HMM: program break mismatch\n") - 1);
-    return NULL;
-}
+    // Never extend our blocks over memory another allocator added.
+    if(program_break != NULL && current_break != program_break)
+        return NULL;
 
     size_t padding = 0;
     if(program_break == NULL){
@@ -80,11 +79,8 @@ static unsigned char *increase_program_break(size_t size){
     }
 
     void *old_break = sbrk((intptr_t)(size + padding));
-
-if(old_break == (void *)-1){
-    write(2, "HMM: sbrk failed\n", sizeof("HMM: sbrk failed\n") - 1);
-    return NULL;
-}
+    if(old_break == (void *)-1)
+        return NULL;
 
     unsigned char *start = (unsigned char *)old_break + padding;
 
@@ -120,11 +116,8 @@ static block *grow_heap(size_t size){
 
     size_t grow_size = chunks * HEAP_CHUNK_SIZE;
     unsigned char *start = increase_program_break(grow_size);
-
-if(start == NULL){
-    write(2, "HMM: grow_heap failed\n", sizeof("HMM: grow_heap failed\n") - 1);
-    return NULL;
-}
+    if(start == NULL)
+        return NULL;
 
     if(last_physical != NULL && last_physical->is_free){
         last_physical->size += grow_size;
