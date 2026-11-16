@@ -7,6 +7,7 @@
 #include "Hmm.h"
 #include <stdint.h>
 #include <unistd.h>
+#include <string.h>
 
 unsigned char *program_break = NULL;
 unsigned char *initial_program_break = NULL;
@@ -182,22 +183,45 @@ void *HmmAlloc(size_t size){
     return (unsigned char *)current + HEADER_SIZE;
 }
 
-void *hmmCalloc(size_t nmemb, size_t size)
-{
-  (void)nmemb;
-  (void)size;
-  return NULL;
+void *hmmCalloc(size_t nmemb, size_t size){
+    if(size != 0 && nmemb > SIZE_MAX / size)
+        return NULL;
+
+    size_t total = nmemb * size;
+    void *ptr = HmmAlloc(total);
+    if(ptr == NULL)
+        return NULL;
+
+    memset(ptr, 0, total);
+    return ptr;
 }
 
-void *hmmReAlloc(void *ptr, size_t reqSize)
-{
-  (void)ptr;
-  (void)reqSize;
-  return NULL;
+void *hmmReAlloc(void *ptr, size_t reqSize){
+    if(ptr == NULL)
+        return HmmAlloc(reqSize);
+
+    if(reqSize == 0){
+        HmmFree(ptr);
+        return NULL;
+    }
+
+    block *current = (block *)((unsigned char *)ptr - HEADER_SIZE);
+    if(current->size >= reqSize)
+        return ptr;
+
+    void *new_ptr = HmmAlloc(reqSize);
+    if(new_ptr == NULL)
+        return NULL;
+
+    memcpy(new_ptr, ptr, current->size);
+    HmmFree(ptr);
+    return new_ptr;
 }
 
-size_t hmmSize(void *ptr)
-{
-  (void)ptr;
-  return 0U;
+size_t hmmSize(void *ptr){
+    if(ptr == NULL)
+        return 0;
+
+    block *current = (block *)((unsigned char *)ptr - HEADER_SIZE);
+    return current->size;
 }
