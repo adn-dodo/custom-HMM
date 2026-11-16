@@ -1,97 +1,154 @@
-# custom-HMM — Heap Memory Manager
+# Heap Memory Manager Skeleton
 
-A C heap allocator implementing `HmmAlloc(size_t)` and `HmmFree(void *)` using **real Linux `sbrk()`** for heap growth and shrinking. The original project layout and First Fit design are retained.
+This project provides replacements for the C library `malloc`, `free`, `calloc`, and `realloc` functions. The wrappers in `src/heapWrappers.c` are complete, but the functions in `src/HmmAlloc.c` and `src/HmmFree.c` are placeholders that must be implemented.
 
-## Features
+## Requirements
 
-- First Fit allocation through a doubly linked free list.
-- Block splitting to reuse excess space.
-- Immediate coalescing of adjacent free blocks.
-- `max_align_t` alignment for headers and returned payloads.
-- Chunk-based growth using `sbrk(positive_increment)`; default chunk is 4096 bytes.
-- Trimming of trailing free memory using `sbrk(negative_increment)`.
-- Checks for invalid sizes, integer overflow, and `sbrk()` failures.
+The project is intended for Linux because the allocator uses Linux/POSIX interfaces such as `sbrk`.
 
-## Memory layout
-
-A block consists of its padded header followed by its payload:
-
-```text
-+----------------------------------------------------------+
-| size | is_free | previous_physical | prev_free | next_free|
-+----------------------------------------------------------+
-| User payload (returned pointer points to its beginning)  |
-+----------------------------------------------------------+
-```
-
-`size` is usable payload capacity, not including `HEADER_SIZE`. Each block contains a pointer to its preceding *physical* block. `previous_free` and `next_free` link only free blocks; the free-list order is separate from physical address order. The address of the next physical block is derived from `header + HEADER_SIZE + size`.
-
-## Real `sbrk()` and alignment
-
-Unlike the earlier simulated-array version, this implementation has **no fixed `heap_area`**. On the first request it obtains the current break using `sbrk(0)`. It then calls `sbrk()` with a positive increment rounded up to one or more `HEAP_CHUNK_SIZE` chunks. If the original break is not suitably aligned, the first increment also includes a few alignment-padding bytes.
-
-`program_break` tracks the last break set by this allocator; `initial_program_break` remembers the break from before the first growth, so a completely freed heap can be returned to its original position. These variables are bookkeeping for the **real** break, not a simulated heap. To avoid overwriting memory added by an unrelated allocator, growth and trimming are skipped when `sbrk(0)` does not match the allocator's tracked end. This design is intended for a controlled, **single-threaded demonstration program**.
-
-**Important:** `sbrk()` changes the actual process break. Combining this allocator with glibc's own heap allocator, other libraries, or concurrent threads is unsafe. `sbrk()` is a legacy nonportable interface; this project uses it because the assignment explicitly requires it. Do not use the project as an `LD_PRELOAD` replacement for `malloc()`.
-
-## `HmmAlloc(size)` algorithm
-
-1. Reject `size == 0`, overflow in alignment, and unrepresentable `sbrk()` increments.
-2. Round the requested size up to `ALIGNMENT`.
-3. Find the first free block large enough for the aligned request.
-4. If none is available, extend the heap in 4096-byte chunks using real `sbrk()`; when the last physical block is free, extend that block rather than creating another header.
-5. Remove the selected block from the free list.
-6. Split the block if the remainder can hold another header and a useful aligned payload.
-7. Mark the allocated block as used, and return its payload pointer.
-
-## `HmmFree(ptr)` algorithm
-
-1. Return immediately for `NULL`.
-2. Recover the header by subtracting `HEADER_SIZE` from the payload pointer. The caller must pass a valid, active HMM allocation.
-3. Mark the block free. Merge with its physically adjacent free successor and predecessor, removing each merged neighbor from the free list and repairing physical links.
-4. Insert the merged block into the free list.
-5. If it is the last physical block, potentially shrink the real process break using a **checked negative `sbrk()` call**. When *all* HMM blocks are free, release the whole HMM region, including initial alignment padding. Otherwise, release full 4096-byte chunks only when at least `TRIM_THRESHOLD` (two chunks) can be returned. Preserve a usable remainder of the tail free block when possible. This reduces `sbrk()` calls and avoids trimming unused space from an earlier reserved chunk.
-
-## Build and test
+Install the required tools on Debian or Ubuntu:
 
 ```sh
-make clean && make
-make verify
+sudo apt update
+sudo apt install build-essential
 ```
 
-`make` builds `build/lib/libhmm.a` and the instructor's `build/hmm_test`. **`make test` builds that executable; it does not execute it.** `make verify` builds and runs the standalone, real-`sbrk()` verification without the standard-library wrappers:
+## Implement the Allocator
+
+Implement the functions declared in `inc/Hmm.h`:
+
+- `HmmAlloc` in `src/HmmAlloc.c`
+- `hmmCalloc` in `src/HmmAlloc.c`
+- `hmmReAlloc` in `src/HmmAlloc.c`
+- `hmmSize` in `src/HmmAlloc.c`
+- `HmmFree` in `src/HmmFree.c`
+
+Do not change `src/heapWrappers.c`. It redirects the standard allocation function names to the functions above.
+
+## Build
+
+From this directory, build the static library and test executable:
 
 ```sh
-gcc -std=c11 -Wall -Wextra -g -O0 -Iinc \
-    -o build/break_patterns \
-    verification/break_patterns.c src/HmmAlloc.c src/HmmFree.c
-./build/break_patterns
+make
 ```
 
-The three scenarios adapt the allocation/free patterns of *The Linux Programming Interface* `free_and_sbrk.c` example ([source](https://man7.org/tlpi/code/online/dist/memalloc/free_and_sbrk.c.html)):
-
-1. Free alternating blocks: the break stays at the allocation peak while an allocation remains at the end.
-2. Free all but the last block: the break stays at the allocation peak.
-3. Free the last half: trailing free blocks coalesce and the break decreases.
-
-Each run uses 100 allocations of 1024 bytes, checks the contents of live blocks, verifies that the number of growth calls is below the number of allocations, and ensures that a final complete free restores the **actual** `sbrk(0)` break to its original address. This is a real-break test, unlike the earlier simulated version.
-
-The original `test/main.c` links `heapWrappers.c`, which redirects `malloc/free/calloc/realloc` to HMM. `hmmCalloc()`, `hmmReAlloc()`, and `hmmSize()` remain *starter-project stubs*. The first three tests exercise the core allocator; the optional `realloc`/`calloc` tests will not pass until those functions are implemented or their `REALLOC_IS_DEFINED` and `CALLOC_IS_DEFINED` flags are disabled in the **test copy**. We keep the instructor's original test unchanged here.
-
-The first instructor test expects the break to equal the address recorded after an initial `printf`. Because the wrappers may serve that `printf` buffer through HMM, trimming arbitrary byte counts could shrink the break below the saved chunk boundary. Our chunk-granular trimming avoids that behavior in the starter core test. The wrapper-based tests still mix HMM and libc activity, so controlled direct-HMM testing with `make verify` is important.
-
-### Valgrind
+Build individual outputs:
 
 ```sh
-valgrind --tool=memcheck --leak-check=full --track-origins=yes ./build/break_patterns
+make static_lib
+make shared_lib
+make test
 ```
 
-Valgrind executes the test and allocator code, but ordinary Memcheck may not associate `HmmAlloc()` payloads with logical heap allocations. A zero-error report therefore does **not** prove all custom-block accesses are valid. Custom-allocation annotations would be a separate debugging improvement. Test without `heapWrappers.c` to avoid intercepting libc allocation calls.
+The generated files are:
 
-## Limitations
+- `build/lib/libhmm.a`: static library
+- `build/lib/libhmm.so`: shared library for Linux runtime interposition
+- `build/hmm_test`: allocator test executable
 
-- This is not thread safe and is not intended to coexist with other libraries manipulating the process break.
-- `HmmFree()` requires a valid outstanding pointer returned by `HmmAlloc()`. Invalid pointers and double frees are undefined behavior; the `is_free` guard is not a general pointer validator.
-- A First Fit list scan is O(n) in the number of free blocks.
-- Small free trailing blocks below `TRIM_THRESHOLD` can be retained while other allocations are live.
-- `hmmCalloc()`, `hmmReAlloc()`, and `hmmSize()` remain TODOs from the starter code; they are not required by the assignment's `HmmAlloc`/`HmmFree` signatures.
+Remove generated files with:
+
+```sh
+make clean
+```
+
+## Run the Tests
+
+Build and run the test executable:
+
+```sh
+make test
+./build/hmm_test
+```
+
+The provided placeholder functions return allocation failures, so the tests are expected to fail until the allocator is implemented.
+
+For additional compiler diagnostics, override `CFLAGS` when building:
+
+```sh
+make clean
+make CFLAGS="-Wall -Wextra -Wpedantic -g -fPIC -fsanitize=address,undefined"
+./build/hmm_test
+```
+
+## Link an Application Statically
+
+Build the static library, then place the library after the application's source or object files in the compiler command:
+
+```sh
+make static_lib
+gcc -Iinc example.c build/lib/libhmm.a -o example
+./example
+```
+
+The linked executable uses the wrappers from this project for its standard allocation calls.
+
+## Use the Allocator in a Linux Shell
+
+Linux can load `libhmm.so` before libc by using `LD_PRELOAD`. This redirects allocation calls made by dynamically linked programs to this library.
+
+First, fully implement and test the allocator. Do not preload the current placeholder implementation because every allocation returns `NULL` and programs may fail to start.
+
+Build the shared library and save its absolute path:
+
+```sh
+make shared_lib
+export HMM_LIB="$(pwd)/build/lib/libhmm.so"
+```
+
+Use the allocator for one command:
+
+```sh
+LD_PRELOAD="$HMM_LIB" command_name argument1 argument2
+```
+
+For example:
+
+```sh
+LD_PRELOAD="$HMM_LIB" ls -la
+```
+
+To use the allocator for a temporary child shell and the dynamically linked commands launched from it:
+
+```sh
+LD_PRELOAD="$HMM_LIB" bash --noprofile --norc
+```
+
+Inside that child shell, confirm the setting and run commands normally:
+
+```sh
+printf '%s\n' "$LD_PRELOAD"
+ls
+grep --version
+```
+
+Leave the temporary shell with:
+
+```sh
+exit
+```
+
+If the current shell remains usable but a preloaded program fails, disable interposition with the shell builtin:
+
+```sh
+unset LD_PRELOAD
+```
+
+Do not add this library to `/etc/ld.so.preload` or a login profile. A defect in a globally preloaded memory allocator can prevent shells and recovery commands from starting.
+
+`LD_PRELOAD` does not affect statically linked executables, secure/set-user-ID programs that reject preload variables, shell builtins already running in the parent shell, or programs that bypass the standard allocation functions.
+
+## My work on the HMM
+
+I started with the original project and implemented the HMM using real `sbrk()`.
+
+- I used First Fit to find a free block big enough for the requested size.
+- If there is no suitable block, I grow the heap in 4096-byte chunks.
+- If the last physical block is free, I extend it. Otherwise, I create a new block and add it to the free list.
+- I split a large block and keep the remaining space in the free list.
+- When I free a block, I merge it with the free blocks next to it.
+- I use negative `sbrk()` to shrink the heap when possible.
+- I also implemented `calloc()`, `realloc()`, and `hmmSize()`.
+
+I kept the flowcharts in a separate file: [FLOWCHARTS.md](FLOWCHARTS.md).
