@@ -10,13 +10,13 @@
 #include <stdbool.h>
 typedef struct block {
 
-    size_t size;
-    bool is_free;
+        size_t size;
+        bool is_free;
 
-    struct block *previous_physical;
+        struct block *previous_physical;
 
-    struct block *previous_free;
-    struct block *next_free;
+        struct block *previous_free;
+        struct block *next_free;
 
 } block;
 
@@ -29,8 +29,8 @@ extern block *last_physical;
 extern unsigned char *program_break;
 extern unsigned char *initial_program_break;
 
-void insert_at_beginning_free(block *new_block);
-void remove_free_block(block *target);
+void insert_at_beginning_free(block * new_block);
+void remove_free_block(block * target);
 
 void HmmFree(void *ptr);
 
@@ -42,4 +42,4 @@ void *hmmReAlloc(void *ptr, size_t reqSize);
 
 size_t hmmSize(void *ptr);
 
-#endif /* HMM_H */
+#endif                          /* HMM_H */
